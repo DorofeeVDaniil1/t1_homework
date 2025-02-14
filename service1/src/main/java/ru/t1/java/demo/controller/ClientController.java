@@ -19,6 +19,8 @@ public class ClientController {
 
     private final ClientService clientService;
 
+    //Сделал дз
+
     @LogException
     @Track
     @GetMapping(value = "/client")
