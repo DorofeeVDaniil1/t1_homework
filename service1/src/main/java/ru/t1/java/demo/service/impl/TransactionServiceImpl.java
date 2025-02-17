@@ -2,8 +2,8 @@ package ru.t1.java.demo.service.impl;
 
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import ru.t1.java.demo.aop.annotation.LogAfterThrowing;
@@ -37,42 +37,52 @@ public class TransactionServiceImpl implements TransactionService {
     @Value("${app.kafka.topics.transaction-accept}")
     private String transactionAcceptTopic;
 
+    @Override
     public List<TransactionDto> getAllTransactions() {
         return transactionRepository.findAll().stream()
                 .map(transactionMapper::toDto)
                 .collect(Collectors.toList());
     }
 
+    @Override
     public TransactionDto getTransactionById(Long id) {
         return transactionRepository.findById(id)
                 .map(transactionMapper::toDto)
                 .orElseThrow(() -> new RuntimeException("Transaction not found with id: " + id));
     }
 
+    @Override
     public TransactionDto createTransaction(TransactionDto transactionDto) {
         Transaction transaction = transactionMapper.toEntity(transactionDto);
         return transactionMapper.toDto(transactionRepository.save(transaction));
     }
 
+    @Override
     public TransactionDto updateTransaction(Long id, TransactionDto transactionDto) {
-        Transaction existingTransaction = transactionRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Transaction not found with id:" + id));
+        Transaction transaction = transactionRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Transaction not found with id: " + id));
+
         Account account = accountRepository.findById(transactionDto.getAccountId())
                 .orElseThrow(() -> new RuntimeException("Account not found with id: " + transactionDto.getAccountId()));
-        existingTransaction.setAccount(account);
-        existingTransaction.setAmount(transactionDto.getAmount());
-        existingTransaction.setTransactionTime(transactionDto.getTransactionTime());    //TODO: здесь возможна передача значения null при незаполненном поле в запросе
-        return transactionMapper.toDto(transactionRepository.save(existingTransaction));
+
+        transaction.setAccount(account);
+        transaction.setAmount(transactionDto.getAmount());
+        transaction.setTransactionTime(transactionDto.getTransactionTime());
+
+        return transactionMapper.toDto(transactionRepository.save(transaction));
     }
 
+    @Override
     public void deleteTransaction(Long id) {
         transactionRepository.deleteById(id);
     }
 
+    @Override
     public void saveTransaction(TransactionDto transactionDto) {
         transactionRepository.save(transactionMapper.toEntity(transactionDto));
     }
 
+    @Override
     @Transactional
     public void processTransaction(TransactionDto transactionDto) {
         Account account = accountRepository.findByIdAndStatus(transactionDto.getAccountId(), AccountStatus.OPEN)
@@ -86,16 +96,14 @@ public class TransactionServiceImpl implements TransactionService {
                 : account.getBalance().add(transactionDto.getAmount()));
         accountRepository.save(account);
 
-        // Отправляем сообщение в топик t1_demo_transaction_accept
-        TransactionAcceptDto acceptDto = new TransactionAcceptDto(
+        kafkaTemplate.send(transactionAcceptTopic, new TransactionAcceptDto(
                 account.getClient().getClientId(),
                 account.getAccountId(),
                 transaction.getTransactionId(),
                 transaction.getTimestamp(),
                 transactionDto.getAmount(),
                 account.getBalance()
-        );
-        kafkaTemplate.send(transactionAcceptTopic, acceptDto);
+        ));
     }
 
     @Override
@@ -103,11 +111,11 @@ public class TransactionServiceImpl implements TransactionService {
     public void updateTransactionStatus(UUID transactionId, TransactionStatus status) {
         Transaction transaction = transactionRepository.findByTransactionId(transactionId)
                 .orElseThrow(() -> new RuntimeException("Transaction not found with id: " + transactionId));
-        if (!transaction.getStatus().equals(TransactionStatus.REQUESTED)) {
-            return;
+
+        if (transaction.getStatus() == TransactionStatus.REQUESTED) {
+            transaction.setStatus(status);
+            transactionRepository.save(transaction);
         }
-        transaction.setStatus(status);
-        transactionRepository.save(transaction);
     }
 
     @Override
@@ -115,17 +123,16 @@ public class TransactionServiceImpl implements TransactionService {
     public void blockTransaction(UUID transactionId) {
         Transaction transaction = transactionRepository.findByTransactionId(transactionId)
                 .orElseThrow(() -> new RuntimeException("Transaction not found with id: " + transactionId));
-        if (!(transaction.getStatus().equals(TransactionStatus.REQUESTED)
-                || transaction.getStatus().equals(TransactionStatus.ACCEPTED))) {
-            return;
-        }
-        transaction.setStatus(TransactionStatus.BLOCKED);
-        transactionRepository.save(transaction);
 
-        Account account = transaction.getAccount();
-        account.setStatus(AccountStatus.BLOCKED);
-        account.setFrozenAmount(account.getFrozenAmount().add(transaction.getAmount()));
-        accountRepository.save(account);
+        if (transaction.getStatus() == TransactionStatus.REQUESTED || transaction.getStatus() == TransactionStatus.ACCEPTED) {
+            transaction.setStatus(TransactionStatus.BLOCKED);
+            transactionRepository.save(transaction);
+
+            Account account = transaction.getAccount();
+            account.setStatus(AccountStatus.BLOCKED);
+            account.setFrozenAmount(account.getFrozenAmount().add(transaction.getAmount()));
+            accountRepository.save(account);
+        }
     }
 
     @Override
@@ -133,16 +140,16 @@ public class TransactionServiceImpl implements TransactionService {
     public void rejectTransaction(UUID transactionId) {
         Transaction transaction = transactionRepository.findByTransactionId(transactionId)
                 .orElseThrow(() -> new RuntimeException("Transaction not found with id: " + transactionId));
-        if (!transaction.getStatus().equals(TransactionStatus.REQUESTED)) {
-            return;
-        }
-        transaction.setStatus(TransactionStatus.REJECTED);
-        transactionRepository.save(transaction);
 
-        Account account = transaction.getAccount();
-        account.setBalance(account.getAccountType() == AccountType.CREDIT
-                        ? account.getBalance().add(transaction.getAmount())
-                        : account.getBalance().subtract(transaction.getAmount()));
-        accountRepository.save(account);
+        if (transaction.getStatus() == TransactionStatus.REQUESTED) {
+            transaction.setStatus(TransactionStatus.REJECTED);
+            transactionRepository.save(transaction);
+
+            Account account = transaction.getAccount();
+            account.setBalance(account.getAccountType() == AccountType.CREDIT
+                    ? account.getBalance().add(transaction.getAmount())
+                    : account.getBalance().subtract(transaction.getAmount()));
+            accountRepository.save(account);
+        }
     }
 }
