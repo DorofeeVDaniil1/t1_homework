@@ -19,7 +19,7 @@ import java.util.UUID;
 public class Client extends AbstractPersistable<Long> {
 
     @Id
-    private Long id;    //что бы при перезапуске перезаписывались существующие записи, а не добавлялись новые
+    private Long id;
 
     @Column(name = "first_name")
     private String firstName;
